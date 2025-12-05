@@ -7,7 +7,6 @@ const stripe = new Stripe(process.env.STRIPE_SECRET);
 const app = express();
 app.use(bodyParser.json());
 
-
 // ===========================================================
 //  WEBHOOK — SHOPIFY: orders/create
 // ===========================================================
@@ -15,11 +14,10 @@ app.post("/shopify/orders/create", async (req, res) => {
   console.log("📦 Nova ordem Shopify recebida:");
   const order = req.body;
 
-  // 👉 LOG COMPLETO PARA VER O PAYLOAD (remove depois)
+  // LOG COMPLETO DO PAYLOAD (podes remover depois)
   console.log("===== RAW ORDER JSON =====");
   console.log(JSON.stringify(order, null, 2));
   console.log("===== FIM RAW ORDER JSON =====");
-
 
   // -----------------------------------------
   // 1. DETETAR SE É PAGAMENTO MB WAY
@@ -41,10 +39,9 @@ app.post("/shopify/orders/create", async (req, res) => {
 
   console.log("✔ Método MB WAY confirmado.");
 
-
-
   // -----------------------------------------
-  // 2. EXTRAIR O NÚMERO DE TELEFONE
+  // 2. EXTRAIR O NÚMERO DE TELEFONE DA ENCOMENDA
+  // (ainda não o vamos enviar para a Stripe, mas já fica pronto)
   // -----------------------------------------
   let phone = null;
 
@@ -62,10 +59,8 @@ app.post("/shopify/orders/create", async (req, res) => {
   }
 
   // limpar número
-  phone = phone.replace(/\s+/g, "").replace(/^\+351/, "");
-  console.log("📱 Número MB WAY:", phone);
-
-
+  phone = phone.replace(/\s+/g, "");
+  console.log("📱 Número (bruto) da Shopify:", phone);
 
   // -----------------------------------------
   // 3. VALOR TOTAL EM CÊNTIMOS
@@ -75,44 +70,35 @@ app.post("/shopify/orders/create", async (req, res) => {
   console.log("💶 Valor (EUR):", order.total_price);
   console.log("💶 Valor (centimos):", amount);
 
-
-
   // -----------------------------------------
-  // 4. CRIAR PAYMENT INTENT MB WAY (API NOVA STRIPE)
+  // 4. CRIAR PAYMENT INTENT MB WAY — FORMATO EXACTO DOCS STRIPE
   // -----------------------------------------
   try {
     const paymentIntent = await stripe.paymentIntents.create({
       amount: amount,
       currency: "eur",
-
-      // método correto
-      payment_method_types: ["mb_way"],
-
-      payment_method_options: {
-        mb_way: {
-          phone_number: phone
-        }
-      },
-
+      payment_method_types: ["mb_way"], // <- EXACTAMENTE assim
       metadata: {
         shopify_order_id: order.id,
         shopify_order_number: order.name,
-      }
+        mbway_phone_from_shopify: phone, // só para referência
+      },
     });
 
-    console.log("💳 PaymentIntent MB WAY criado:");
+    console.log("💳 PaymentIntent MB WAY criado com sucesso:");
     console.log(paymentIntent);
 
-    return res.status(200).send("MB WAY enviado");
-
+    return res.status(200).send("MB WAY PaymentIntent criado");
   } catch (err) {
     console.log("❌ ERRO AO CRIAR MB WAY:");
-    console.log(err);
-    return res.status(500).send("erro");
+    console.log("type:", err.type);
+    console.log("code:", err.code);
+    console.log("statusCode:", err.statusCode);
+    console.log("message:", err.message);
+    console.log("raw:", err.raw);
+    return res.status(500).send("erro stripe");
   }
 });
-
-
 
 // ===========================================================
 //  WEBHOOK — STRIPE
@@ -123,16 +109,12 @@ app.post("/stripe/webhook", (req, res) => {
   res.status(200).send("ok");
 });
 
-
-
 // ===========================================================
 //  ROOT
 // ===========================================================
 app.get("/", (req, res) => {
   res.send("PaymentsBridge está online 🚀");
 });
-
-
 
 // ===========================================================
 //  START SERVER (Render)
