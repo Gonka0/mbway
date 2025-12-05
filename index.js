@@ -3,27 +3,20 @@ import bodyParser from "body-parser";
 import Stripe from "stripe";
 
 console.log("🔑 STRIPE KEY EM USO:", process.env.STRIPE_SECRET);
-
-
 const stripe = new Stripe(process.env.STRIPE_SECRET);
 
 const app = express();
 app.use(bodyParser.json());
 
 // ===================================================================
-//  WEBHOOK — SHOPIFY: orders/create
+//  SHOPIFY WEBHOOK: orders/create
 // ===================================================================
 app.post("/shopify/orders/create", async (req, res) => {
   console.log("📦 Nova ordem Shopify recebida:");
   const order = req.body;
 
-  // DEBUG — VER O PAYLOAD COMPLETO (remove depois)
-  console.log("===== RAW ORDER JSON =====");
-  console.log(JSON.stringify(order, null, 2));
-  console.log("===== FIM RAW ORDER JSON =====");
-
   // ---------------------------------------------------------------
-  // 1. DETETAR SE É PAGAMENTO MANUAL "MB WAY"
+  // 1. Verificar se é pagamento manual MB WAY
   // ---------------------------------------------------------------
   const gateways = order.payment_gateway_names || [];
   console.log("🔍 Gateways recebidos:", gateways);
@@ -33,25 +26,24 @@ app.post("/shopify/orders/create", async (req, res) => {
   );
 
   if (!isMBWAY) {
-    console.log("⛔ Não é pagamento MB WAY. Ignorado.");
+    console.log("⛔ Não é MB WAY → Ignorado");
     return res.status(200).send("ignored");
   }
 
-  console.log("✔ Método MB WAY confirmado.");
+  console.log("✔ MB WAY detectado.");
 
   // ---------------------------------------------------------------
-  // 2. VALOR TOTAL EM CÊNTIMOS
+  // 2. Valor total da achat em cêntimos
   // ---------------------------------------------------------------
   const amount = Math.round(parseFloat(order.total_price) * 100);
-  console.log("💶 Valor da encomenda (centimos):", amount);
+  console.log("💶 Valor total:", order.total_price, "→", amount, "cêntimos");
 
   // ---------------------------------------------------------------
-  // 3. CRIAR STRIPE CHECKOUT SESSION (MB WAY)
+  // 3. Criar Stripe Checkout Session com MB WAY
   // ---------------------------------------------------------------
   try {
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
-
       payment_method_types: ["mb_way"],
 
       line_items: [
@@ -67,26 +59,22 @@ app.post("/shopify/orders/create", async (req, res) => {
         },
       ],
 
-      // URLs após pagamento
-      success_url: `https://a-tua-loja.com/success?order_id=${order.id}`,
-      cancel_url: `https://a-tua-loja.com/cancel?order_id=${order.id}`,
+      success_url: `https://A-TUA-LOJA.com/sucesso?order_id=${order.id}`,
+      cancel_url: `https://A-TUA-LOJA.com/cancelado?order_id=${order.id}`,
 
       metadata: {
         shopify_order_id: order.id,
         shopify_order_number: order.name,
+        customer_email: order.email || "",
       },
     });
 
-    console.log("💳 Checkout Session criada:");
+    console.log("💳 Checkout Session MB WAY criada com sucesso!");
     console.log("🔗 URL:", session.url);
 
-    // Aqui podes:
-    // - enviar SMS
-    // - enviar email
-    // - guardar em note_attributes da Shopify
-    // - mostrar ao cliente automaticamente
+    // Aqui podes enviar ao cliente por email/SMS se quiseres
 
-    return res.status(200).send("Checkout Session MB WAY criada");
+    return res.status(200).send("checkout session criada");
   } catch (err) {
     console.log("❌ ERRO AO CRIAR CHECKOUT SESSION MB WAY:");
     console.log(err);
@@ -95,7 +83,7 @@ app.post("/shopify/orders/create", async (req, res) => {
 });
 
 // ===================================================================
-//  WEBHOOK — STRIPE (pagamento confirmado, falhado, etc.)
+//  STRIPE WEBHOOK (opcional para confirmar pagamentos)
 // ===================================================================
 app.post("/stripe/webhook", (req, res) => {
   console.log("💳 Webhook Stripe recebido:");
@@ -107,7 +95,7 @@ app.post("/stripe/webhook", (req, res) => {
 //  ROOT
 // ===================================================================
 app.get("/", (req, res) => {
-  res.send("Stripe MB WAY App está online 🚀");
+  res.send("🚀 App MB WAY + Stripe + Shopify está online!");
 });
 
 // ===================================================================
