@@ -1,126 +1,58 @@
 import express from "express";
 import bodyParser from "body-parser";
+import Stripe from "stripe";
 
 const app = express();
 app.use(bodyParser.json());
 
-// ENV
-const VIVA_MERCHANT_ID = process.env.VIVA_MERCHANT_ID;
-const VIVA_API_KEY = process.env.VIVA_API_KEY;
+const stripe = new Stripe(process.env.STRIPE_SECRET);
 
-const VIVA_BASE_URL = "https://api.vivapayments.com";
-
-// AUTH header
-const getAuthHeaders = () => ({
-  "Authorization": "Basic " + Buffer.from(VIVA_API_KEY + ":").toString("base64"),
-  "Content-Type": "application/json"
-});
-
-// SAFE JSON PARSE
-async function safeJson(res) {
-  const text = await res.text();
+// TESTE DIRETO AO PAYMENT INTENT (MB WAY)
+app.get("/test-mbway", async (req, res) => {
   try {
-    return JSON.parse(text);
-  } catch {
-    return { raw: text || null };
-  }
-}
+    console.log("🧪 TESTE: Criar PaymentIntent MB WAY...");
 
-// ==========================================================
-// SHOPIFY WEBHOOK - orders/create
-// ==========================================================
-app.post("/shopify/orders/create", async (req, res) => {
-  console.log("\n/////////////////////////////////////////");
-  console.log("📦 Nova ordem Shopify recebida");
+    const phone = "932000000"; // <-- troca para um número TEU real
 
-  const order = req.body;
-
-  // Detectar MB WAY
-  const gateways = order.payment_gateway_names || [];
-  const isMBWAY = gateways.some(g =>
-    g.toLowerCase().includes("mb") || g.toLowerCase().includes("way")
-  );
-
-  if (!isMBWAY) return res.status(200).send("ignored");
-
-  console.log("✔ MB WAY detectado");
-
-  // Telefone
-  let phone =
-    order.billing_address?.phone ||
-    order.shipping_address?.phone ||
-    order.phone ||
-    null;
-
-  if (!phone) return res.status(200).send("missing phone");
-
-  phone = phone.replace(/\s+/g, "").replace(/^\+351/, "");
-  console.log("📱 Telefone MB WAY:", phone);
-
-  // Valor
-  const amount = Math.round(parseFloat(order.total_price) * 100);
-  console.log("💶 Valor da encomenda:", amount);
-
-  try {
-    // ------------------------------------------------------
-    // 1. Criar ORDER na Viva Wallet
-    // ------------------------------------------------------
-    const orderRes = await fetch(`${VIVA_BASE_URL}/checkout/v2/orders`, {
-      method: "POST",
-      headers: getAuthHeaders(),
-      body: JSON.stringify({
-        amount: amount,
-        customerTrns: `Pedido ${order.name}`,
-        merchantTrns: `Shopify ${order.name}`,
-        merchantId: VIVA_MERCHANT_ID,   // <-- CORREÇÃO AQUI
-        customer: {
-          email: order.email,
-          phone: phone
-        },
-        sourceCode: "Default",
-        paymentNotification: true
-      })
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: 100, // 1€
+      currency: "eur",
+      payment_method_types: ["mbway"],
+      payment_method_data: {
+        type: "mbway",
+        mbway: {
+          phone_number: phone
+        }
+      },
+      confirm: true, // dispara o pedido MB WAY
+      metadata: {
+        test: "mbway"
+      }
     });
 
-    const orderData = await safeJson(orderRes);
-    console.log("💳 ORDER response:", orderData);
+    console.log("💳 PaymentIntent criado:", paymentIntent.id);
 
-    if (!orderData.orderCode) {
-      console.log("❌ ERRO: Viva Wallet não retornou orderCode");
-      return res.status(500).send("erro-order");
-    }
-
-    const orderCode = orderData.orderCode;
-
-    // ------------------------------------------------------
-    // 2. Enviar PUSH MB WAY
-    // ------------------------------------------------------
-    const payRes = await fetch(`${VIVA_BASE_URL}/checkout/v2/transactions`, {
-      method: "POST",
-      headers: getAuthHeaders(),
-      body: JSON.stringify({
-        orderCode: orderCode,
-        paymentMethod: "mbway",
-        phoneNumber: phone,
-        merchantId: VIVA_MERCHANT_ID   // <-- CORREÇÃO AQUI TBM
-      })
+    res.json({
+      ok: true,
+      id: paymentIntent.id,
+      status: paymentIntent.status,
+      next_action: paymentIntent.next_action || null
     });
-
-    const payData = await safeJson(payRes);
-    console.log("📲 PUSH MB WAY enviado:", payData);
-
-    return res.status(200).send("mbway enviado");
 
   } catch (err) {
-    console.log("❌ ERRO MB WAY:", err);
-    return res.status(500).send("erro");
+    console.error("❌ ERRO MB WAY:", err);
+    res.status(500).json({
+      ok: false,
+      error: err.message,
+      details: err.raw || err
+    });
   }
 });
 
 app.get("/", (req, res) => {
-  res.send("VivaWallet MB WAY App online 🚀");
+  res.send("MB WAY PaymentIntent tester online 🚀");
 });
 
 app.listen(process.env.PORT || 3000, () => {
-  console.log("🔥 Servidor ativo");
+  console.log("🔥 Servidor Stripe MB WAY ativo");
 });
