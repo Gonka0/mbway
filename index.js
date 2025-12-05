@@ -2,20 +2,22 @@ import express from "express";
 import bodyParser from "body-parser";
 import Stripe from "stripe";
 
+// Iniciar app Express
 const app = express();
 
-// Stripe exige RAW body apenas neste endpoint
+// Stripe precisa de raw body apenas no webhook
 app.use("/stripe/webhook", bodyParser.raw({ type: "application/json" }));
 
-// Todos os outros endpoints usam JSON normal
+// Restante API usa JSON normal
 app.use(bodyParser.json());
 
+// Stripe init
 const stripe = new Stripe(process.env.STRIPE_SECRET, {
   apiVersion: "2024-06-20",
 });
 
 // =====================================================
-// FUNÇÃO → Marcar order como paga na Shopify
+// FUNÇÃO → marcar order como paga na Shopify
 // =====================================================
 async function markShopifyOrderPaid(orderId, paymentIntentId) {
   try {
@@ -65,50 +67,47 @@ app.post("/shopify/orders/create", async (req, res) => {
   );
 
   if (!isMBWAY) {
-    console.log("⛔ Não é MB WAY → ignorado");
+    console.log("⛔ Não é MB WAY → Ignorado");
     return res.status(200).send("ignored");
   }
 
-  console.log("✔ MB WAY detectado → Criar PaymentIntent");
+  console.log("✔ MB WAY detectado → Criar Checkout Session");
 
   const amountCents = Math.round(parseFloat(order.total_price) * 100);
 
-  const phone =
-    order.phone ||
-    order.billing_address?.phone ||
-    order.shipping_address?.phone;
-
-  if (!phone) {
-    console.log("⚠️ Encomenda sem número MB WAY");
-    return res.status(200).send("missing phone");
-  }
-
   try {
-    const pi = await stripe.paymentIntents.create({
-      amount: amountCents,
-      currency: "eur",
+    // Criar a Stripe Checkout Session
+    const session = await stripe.checkout.sessions.create({
+      mode: "payment",
       payment_method_types: ["mb_way"],
-      payment_method_data: {
-        type: "mb_way",
-        mb_way: { phone },
-        billing_details: {
-          email: order.email,
-          name:
-            (order.shipping_address?.first_name || "") +
-            " " +
-            (order.shipping_address?.last_name || ""),
+      line_items: [
+        {
+          price_data: {
+            currency: "eur",
+            product_data: {
+              name: `Pedido ${order.name}`,
+            },
+            unit_amount: amountCents,
+          },
+          quantity: 1,
         },
-      },
-      confirm: true,
+      ],
+      success_url: `${process.env.SUCCESS_URL}?order=${order.id}`,
+      cancel_url: `${process.env.CANCEL_URL}?order=${order.id}`,
       metadata: {
         shopify_order_id: order.id,
-        shopify_order_name: order.name,
       },
     });
 
-    console.log("💳 PaymentIntent criado:", pi.id);
+    console.log("🔗 Checkout Session criada:", session.url);
 
-    return res.status(200).send("ok");
+    // (Opcional) Podes enviar este link por email ao cliente
+    // Ou guardar via Firestore ou BD
+
+    return res.status(200).send({
+      checkout_url: session.url,
+    });
+
   } catch (err) {
     console.error("❌ Erro Stripe:", err);
     return res.status(200).send("stripe-error");
@@ -130,22 +129,21 @@ app.post("/stripe/webhook", (req, res) => {
     );
   } catch (err) {
     console.error("❌ Webhook Stripe inválido:", err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
+    return res.status(400).send("Webhook error");
   }
 
   console.log("📩 Evento Stripe:", event.type);
 
-  if (event.type === "payment_intent.succeeded") {
-    const pi = event.data.object;
+  if (event.type === "checkout.session.completed") {
+    const session = event.data.object;
 
-    const orderId = pi.metadata?.shopify_order_id;
-    if (!orderId) {
-      console.log("⚠️ PaymentIntent sem metadata de Shopify");
-      return res.sendStatus(200);
+    const orderId = session.metadata?.shopify_order_id;
+    const pi = session.payment_intent;
+
+    if (orderId && pi) {
+      console.log("💸 MB WAY pago → Atualizar Shopify:", orderId);
+      markShopifyOrderPaid(orderId, pi);
     }
-
-    console.log("💸 MB WAY pago → atualizar Shopify:", orderId);
-    markShopifyOrderPaid(orderId, pi.id);
   }
 
   res.sendStatus(200);
@@ -155,11 +153,11 @@ app.post("/stripe/webhook", (req, res) => {
 // TESTE
 // =====================================================
 app.get("/", (req, res) => {
-  res.send("🚀 MB WAY App está ativa e funcional");
+  res.send("🚀 MB WAY App com Checkout Session está ativa");
 });
 
 // =====================================================
-// SERVIDOR
+// START SERVER
 // =====================================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
