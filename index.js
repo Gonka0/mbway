@@ -1,7 +1,6 @@
 import express from "express";
 import bodyParser from "body-parser";
 import Stripe from "stripe";
-import fetch from "node-fetch";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -11,10 +10,10 @@ dotenv.config();
 // =====================================================
 const app = express();
 
-// Stripe exige RAW body para webhooks → aplicamos APENAS no /stripe/webhook
+// Stripe exige RAW body apenas no webhook Stripe
 app.use("/stripe/webhook", bodyParser.raw({ type: "application/json" }));
 
-// Para todos os restantes endpoints → JSON normal
+// RESTO DA API → JSON NORMAL
 app.use(bodyParser.json());
 
 const stripe = new Stripe(process.env.STRIPE_SECRET, {
@@ -22,7 +21,7 @@ const stripe = new Stripe(process.env.STRIPE_SECRET, {
 });
 
 // =====================================================
-// HELPER – Marcar order como paga na Shopify
+// FUNÇÃO: Marcar order paga na Shopify
 // =====================================================
 async function markShopifyOrderPaid(orderId, paymentIntentId) {
   try {
@@ -58,17 +57,16 @@ async function markShopifyOrderPaid(orderId, paymentIntentId) {
 }
 
 // =====================================================
-// SHOPIFY WEBHOOK – orders/create
+// SHOPIFY → WEBHOOK orders/create
 // =====================================================
 app.post("/shopify/orders/create", async (req, res) => {
-  console.log("📦 Nova ordem Shopify recebida");
+  console.log("📦 Nova ordem Shopify recebida:");
 
   const order = req.body;
   const gateways = order.payment_gateway_names || [];
 
   console.log("🔍 Gateways:", gateways);
 
-  // detetar MB WAY no método manual criado na Shopify
   const isMBWAY = gateways.some((g) =>
     g.toLowerCase().includes("mb") || g.toLowerCase().includes("way")
   );
@@ -78,7 +76,7 @@ app.post("/shopify/orders/create", async (req, res) => {
     return res.status(200).send("ignored");
   }
 
-  console.log("✔ MB WAY detectado → a criar PaymentIntent");
+  console.log("✔ MB WAY detectado → criar PaymentIntent");
 
   const amountCents = Math.round(parseFloat(order.total_price) * 100);
 
@@ -88,12 +86,11 @@ app.post("/shopify/orders/create", async (req, res) => {
     order.shipping_address?.phone;
 
   if (!phone) {
-    console.log("⚠️ Encomenda MB WAY sem telefone, impossível processar.");
+    console.log("⚠️ Encomenda MB WAY sem número de telefone");
     return res.status(200).send("missing phone");
   }
 
   try {
-    // Criar PaymentIntent MB WAY
     const pi = await stripe.paymentIntents.create({
       amount: amountCents,
       currency: "eur",
@@ -120,13 +117,13 @@ app.post("/shopify/orders/create", async (req, res) => {
 
     return res.status(200).send("ok");
   } catch (err) {
-    console.error("❌ Erro a criar PaymentIntent MB WAY:", err);
+    console.error("❌ Erro Stripe:", err);
     return res.status(200).send("stripe-error");
   }
 });
 
 // =====================================================
-// STRIPE WEBHOOK – payment_intent.succeeded
+// STRIPE → WEBHOOK
 // =====================================================
 app.post("/stripe/webhook", (req, res) => {
   const sig = req.headers["stripe-signature"];
@@ -150,7 +147,7 @@ app.post("/stripe/webhook", (req, res) => {
     const orderId = pi.metadata?.shopify_order_id;
 
     if (orderId) {
-      console.log("💸 MB WAY pago → A marcar order paga na Shopify:", orderId);
+      console.log("💸 MB WAY pago → a marcar order paga:", orderId);
       markShopifyOrderPaid(orderId, pi.id);
     }
   }
@@ -159,10 +156,10 @@ app.post("/stripe/webhook", (req, res) => {
 });
 
 // =====================================================
-// ROOT
+// TESTE LOCAL
 // =====================================================
 app.get("/", (req, res) => {
-  res.send("MB WAY app está a correr 🚀");
+  res.send("🚀 MB WAY App está ativa");
 });
 
 // =====================================================
@@ -170,5 +167,5 @@ app.get("/", (req, res) => {
 // =====================================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Servidor activo na porta ${PORT}`);
+  console.log(`🔥 Servidor ativo na porta ${PORT}`);
 });
