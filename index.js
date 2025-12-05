@@ -1,19 +1,13 @@
 import express from "express";
 import bodyParser from "body-parser";
 import Stripe from "stripe";
-import dotenv from "dotenv";
 
-dotenv.config();
-
-// =====================================================
-// INIT
-// =====================================================
 const app = express();
 
-// Stripe exige RAW body apenas no webhook Stripe
+// Stripe exige RAW body apenas neste endpoint
 app.use("/stripe/webhook", bodyParser.raw({ type: "application/json" }));
 
-// RESTO DA API → JSON NORMAL
+// Todos os outros endpoints usam JSON normal
 app.use(bodyParser.json());
 
 const stripe = new Stripe(process.env.STRIPE_SECRET, {
@@ -21,7 +15,7 @@ const stripe = new Stripe(process.env.STRIPE_SECRET, {
 });
 
 // =====================================================
-// FUNÇÃO: Marcar order paga na Shopify
+// FUNÇÃO → Marcar order como paga na Shopify
 // =====================================================
 async function markShopifyOrderPaid(orderId, paymentIntentId) {
   try {
@@ -46,8 +40,7 @@ async function markShopifyOrderPaid(orderId, paymentIntentId) {
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      console.error("❌ Erro a marcar order paga:", response.status, errorText);
+      console.error("❌ Erro Shopify:", await response.text());
     } else {
       console.log("✅ Order marcada como paga na Shopify:", orderId);
     }
@@ -57,10 +50,10 @@ async function markShopifyOrderPaid(orderId, paymentIntentId) {
 }
 
 // =====================================================
-// SHOPIFY → WEBHOOK orders/create
+// SHOPIFY WEBHOOK — orders/create
 // =====================================================
 app.post("/shopify/orders/create", async (req, res) => {
-  console.log("📦 Nova ordem Shopify recebida:");
+  console.log("📦 Webhook Shopify recebido");
 
   const order = req.body;
   const gateways = order.payment_gateway_names || [];
@@ -72,11 +65,11 @@ app.post("/shopify/orders/create", async (req, res) => {
   );
 
   if (!isMBWAY) {
-    console.log("⛔ Não é MB WAY → Ignorado");
+    console.log("⛔ Não é MB WAY → ignorado");
     return res.status(200).send("ignored");
   }
 
-  console.log("✔ MB WAY detectado → criar PaymentIntent");
+  console.log("✔ MB WAY detectado → Criar PaymentIntent");
 
   const amountCents = Math.round(parseFloat(order.total_price) * 100);
 
@@ -86,7 +79,7 @@ app.post("/shopify/orders/create", async (req, res) => {
     order.shipping_address?.phone;
 
   if (!phone) {
-    console.log("⚠️ Encomenda MB WAY sem número de telefone");
+    console.log("⚠️ Encomenda sem número MB WAY");
     return res.status(200).send("missing phone");
   }
 
@@ -123,7 +116,7 @@ app.post("/shopify/orders/create", async (req, res) => {
 });
 
 // =====================================================
-// STRIPE → WEBHOOK
+// STRIPE WEBHOOK — payment_intent.succeeded
 // =====================================================
 app.post("/stripe/webhook", (req, res) => {
   const sig = req.headers["stripe-signature"];
@@ -137,33 +130,36 @@ app.post("/stripe/webhook", (req, res) => {
     );
   } catch (err) {
     console.error("❌ Webhook Stripe inválido:", err.message);
-    return res.status(400).send("Webhook error");
+    return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
   console.log("📩 Evento Stripe:", event.type);
 
   if (event.type === "payment_intent.succeeded") {
     const pi = event.data.object;
-    const orderId = pi.metadata?.shopify_order_id;
 
-    if (orderId) {
-      console.log("💸 MB WAY pago → a marcar order paga:", orderId);
-      markShopifyOrderPaid(orderId, pi.id);
+    const orderId = pi.metadata?.shopify_order_id;
+    if (!orderId) {
+      console.log("⚠️ PaymentIntent sem metadata de Shopify");
+      return res.sendStatus(200);
     }
+
+    console.log("💸 MB WAY pago → atualizar Shopify:", orderId);
+    markShopifyOrderPaid(orderId, pi.id);
   }
 
   res.sendStatus(200);
 });
 
 // =====================================================
-// TESTE LOCAL
+// TESTE
 // =====================================================
 app.get("/", (req, res) => {
-  res.send("🚀 MB WAY App está ativa");
+  res.send("🚀 MB WAY App está ativa e funcional");
 });
 
 // =====================================================
-// START SERVER
+// SERVIDOR
 // =====================================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
