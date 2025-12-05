@@ -2,6 +2,9 @@ import express from "express";
 import bodyParser from "body-parser";
 import Stripe from "stripe";
 
+console.log("🔑 STRIPE KEY EM USO:", process.env.STRIPE_SECRET);
+
+
 const stripe = new Stripe(process.env.STRIPE_SECRET);
 
 const app = express();
