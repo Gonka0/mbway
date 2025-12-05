@@ -1,27 +1,75 @@
 import express from "express";
 import bodyParser from "body-parser";
 import Stripe from "stripe";
+import fetch from "node-fetch";
+import dotenv from "dotenv";
 
-console.log("🔑 STRIPE KEY EM USO:", process.env.STRIPE_SECRET);
-const stripe = new Stripe(process.env.STRIPE_SECRET);
+dotenv.config();
 
+// =====================================================
+// INIT
+// =====================================================
 const app = express();
+
+// Stripe exige RAW body para webhooks → aplicamos APENAS no /stripe/webhook
+app.use("/stripe/webhook", bodyParser.raw({ type: "application/json" }));
+
+// Para todos os restantes endpoints → JSON normal
 app.use(bodyParser.json());
 
-// ===================================================================
-//  SHOPIFY WEBHOOK: orders/create
-// ===================================================================
+const stripe = new Stripe(process.env.STRIPE_SECRET, {
+  apiVersion: "2024-06-20",
+});
+
+// =====================================================
+// HELPER – Marcar order como paga na Shopify
+// =====================================================
+async function markShopifyOrderPaid(orderId, paymentIntentId) {
+  try {
+    const url = `https://${process.env.SHOPIFY_STORE_DOMAIN}/admin/api/2024-04/orders/${orderId}/transactions.json`;
+
+    const body = {
+      transaction: {
+        kind: "capture",
+        status: "success",
+        gateway: "Stripe MB WAY",
+        authorization: paymentIntentId,
+      },
+    };
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "X-Shopify-Access-Token": process.env.SHOPIFY_ADMIN_TOKEN,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("❌ Erro a marcar order paga:", response.status, errorText);
+    } else {
+      console.log("✅ Order marcada como paga na Shopify:", orderId);
+    }
+  } catch (err) {
+    console.error("❌ Erro markShopifyOrderPaid:", err);
+  }
+}
+
+// =====================================================
+// SHOPIFY WEBHOOK – orders/create
+// =====================================================
 app.post("/shopify/orders/create", async (req, res) => {
-  console.log("📦 Nova ordem Shopify recebida:");
+  console.log("📦 Nova ordem Shopify recebida");
+
   const order = req.body;
-
-  // ---------------------------------------------------------------
-  // 1. Verificar se é pagamento manual MB WAY
-  // ---------------------------------------------------------------
   const gateways = order.payment_gateway_names || [];
-  console.log("🔍 Gateways recebidos:", gateways);
 
-  const isMBWAY = gateways.some(g =>
+  console.log("🔍 Gateways:", gateways);
+
+  // detetar MB WAY no método manual criado na Shopify
+  const isMBWAY = gateways.some((g) =>
     g.toLowerCase().includes("mb") || g.toLowerCase().includes("way")
   );
 
@@ -30,87 +78,97 @@ app.post("/shopify/orders/create", async (req, res) => {
     return res.status(200).send("ignored");
   }
 
-  console.log("✔ MB WAY detectado.");
+  console.log("✔ MB WAY detectado → a criar PaymentIntent");
 
-  // ---------------------------------------------------------------
-  // 2. Apanhar telefone do cliente
-  // ---------------------------------------------------------------
-  let phone =
-    order.billing_address?.phone ||
-    order.shipping_address?.phone ||
+  const amountCents = Math.round(parseFloat(order.total_price) * 100);
+
+  const phone =
     order.phone ||
-    null;
+    order.billing_address?.phone ||
+    order.shipping_address?.phone;
 
   if (!phone) {
-    console.log("❌ Telefone não encontrado!");
+    console.log("⚠️ Encomenda MB WAY sem telefone, impossível processar.");
     return res.status(200).send("missing phone");
   }
 
-  phone = phone.replace(/\s+/g, "").replace(/^\+351/, "");
-  console.log("📱 Telefone MB WAY:", phone);
-
-  // ---------------------------------------------------------------
-  // 3. Valor total da compra em cêntimos
-  // ---------------------------------------------------------------
-  const amount = Math.round(parseFloat(order.total_price) * 100);
-  console.log("💶 Valor total:", order.total_price, "→", amount, "cêntimos");
-
-  // ---------------------------------------------------------------
-  // 4. Criar PaymentIntent MB WAY (ENVIA PEDIDO IMEDIATO)
-  // ---------------------------------------------------------------
   try {
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: amount,
+    // Criar PaymentIntent MB WAY
+    const pi = await stripe.paymentIntents.create({
+      amount: amountCents,
       currency: "eur",
-      payment_method_types: ["mbway"],
-
+      payment_method_types: ["mb_way"],
       payment_method_data: {
-        type: "mbway",
-        mbway: {
-          phone_number: phone  // <-- É AQUI QUE A STRIPE ENVIA O PEDIDO MB WAY
-        }
+        type: "mb_way",
+        mb_way: { phone },
+        billing_details: {
+          email: order.email,
+          name:
+            (order.shipping_address?.first_name || "") +
+            " " +
+            (order.shipping_address?.last_name || ""),
+        },
       },
-
-      confirm: true, // <-- ISTO GERA O PAGAMENTO DE IMEDIATO (ENVIA PUSH MBWAY)
-
+      confirm: true,
       metadata: {
         shopify_order_id: order.id,
-        shopify_order_number: order.name,
-        customer_email: order.email || "",
+        shopify_order_name: order.name,
       },
     });
 
-    console.log("💳 PaymentIntent criado:", paymentIntent.id);
-    console.log("📲 Status:", paymentIntent.status);
+    console.log("💳 PaymentIntent criado:", pi.id);
 
-    return res.status(200).send("paymentintent criado");
+    return res.status(200).send("ok");
   } catch (err) {
-    console.log("❌ ERRO AO CRIAR PAYMENTINTENT MB WAY:");
-    console.log(err);
-    return res.status(500).send("erro");
+    console.error("❌ Erro a criar PaymentIntent MB WAY:", err);
+    return res.status(200).send("stripe-error");
   }
 });
 
-// ===================================================================
-//  STRIPE WEBHOOK (opcional para confirmar pagamentos)
-// ===================================================================
+// =====================================================
+// STRIPE WEBHOOK – payment_intent.succeeded
+// =====================================================
 app.post("/stripe/webhook", (req, res) => {
-  console.log("💳 Webhook Stripe recebido:");
-  console.log(req.body);
-  res.status(200).send("ok");
+  const sig = req.headers["stripe-signature"];
+
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(
+      req.body,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
+  } catch (err) {
+    console.error("❌ Webhook Stripe inválido:", err.message);
+    return res.status(400).send("Webhook error");
+  }
+
+  console.log("📩 Evento Stripe:", event.type);
+
+  if (event.type === "payment_intent.succeeded") {
+    const pi = event.data.object;
+    const orderId = pi.metadata?.shopify_order_id;
+
+    if (orderId) {
+      console.log("💸 MB WAY pago → A marcar order paga na Shopify:", orderId);
+      markShopifyOrderPaid(orderId, pi.id);
+    }
+  }
+
+  res.sendStatus(200);
 });
 
-// ===================================================================
-//  ROOT
-// ===================================================================
+// =====================================================
+// ROOT
+// =====================================================
 app.get("/", (req, res) => {
-  res.send("🚀 App MB WAY + Stripe + Shopify está online!");
+  res.send("MB WAY app está a correr 🚀");
 });
 
-// ===================================================================
-//  START SERVER (Render)
-// ===================================================================
+// =====================================================
+// START SERVER
+// =====================================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🔥 Servidor ativo na porta ${PORT}`);
+  console.log(`🚀 Servidor activo na porta ${PORT}`);
 });
