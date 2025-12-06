@@ -154,6 +154,52 @@ app.post("/stripe/webhook", (req, res) => {
   return res.sendStatus(200);
 });
 
+// ===========================================================
+//  ENDPOINT — CRIAR CHECKOUT MB WAY (pixel -> backend)
+// ===========================================================
+app.post("/create-payment", async (req, res) => {
+  console.log("📥 Pedido recebido do pixel:", req.body);
+
+  const { order_id, amount, phone } = req.body;
+
+  if (!order_id || !amount || !phone) {
+    return res.status(400).json({ error: "missing fields" });
+  }
+
+  try {
+    // 👉 Criar PaymentIntent (com cliente real)
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: Math.round(parseFloat(amount) * 100),
+      currency: "eur",
+      payment_method_types: ["mb_way"],
+
+      payment_method_options: {
+        mb_way: {
+          phone_number: phone.replace(/\s+/g, "").replace(/^\+351/, "")
+        }
+      },
+
+      metadata: {
+        shopify_order_id: order_id
+      }
+    });
+
+    console.log("💳 PaymentIntent criado:", paymentIntent.id);
+
+    // 👉 LINK PARA PAGAMENTO (STRIPE NÃO DÁ. Então fazemos nós)
+    const paymentUrl = `https://pay.stripe.com/pay/${paymentIntent.client_secret}`;
+
+    return res.json({
+      payment_url: paymentUrl
+    });
+
+  } catch (err) {
+    console.error("❌ Erro ao criar pagamento externo:", err);
+    return res.status(500).json({ error: "stripe_error" });
+  }
+});
+
+
 // =====================================================
 // ROOT
 // =====================================================
