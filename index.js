@@ -21,7 +21,7 @@ async function fetchMultibanco(orderId) {
   `;
 
   const response = await fetch(
-    "https://luma-line.myshopify.com/admin/api/2023-10/graphql.json",
+    "https://arion-lisboa.myshopify.com/admin/api/2023-10/graphql.json",
     {
       method: "POST",
       headers: {
