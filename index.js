@@ -1,23 +1,15 @@
 import express from "express";
 
-
 const app = express();
-
-// Shopify envia JSON
 app.use(express.json());
 
-/**
- * WEBHOOK: Order updated
- * Shopify → espera Multibanco → envia SMS EZ4U
- */
 app.post("/webhooks/shopify-order-updated", async (req, res) => {
   const order = req.body;
 
-  // Responder IMEDIATAMENTE ao Shopify
+  // responder logo ao Shopify
   res.sendStatus(200);
 
   try {
-    // Só Shopify Payments (Multibanco)
     if (!order.payment_gateway_names?.includes("shopify_payments")) {
       console.log("Ignorado: não é Shopify Payments");
       return;
@@ -25,35 +17,48 @@ app.post("/webhooks/shopify-order-updated", async (req, res) => {
 
     console.log("Order recebida:", order.id);
 
-    // Esperar para a referência Multibanco ser criada
-    await new Promise(resolve => setTimeout(resolve, 20000));
+    const maxAttempts = 6;
+    const delayMs = 15000;
 
-    // Buscar order completa (com transactions)
-    const shopifyResponse = await fetch(
-      `https://arion-lisboa.myshopify.com/admin/api/2023-10/orders/${order.id}.json`,
-      {
-        headers: {
-          "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
-          "Content-Type": "application/json"
+    let mbTransaction = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      console.log(`Tentativa ${attempt}/${maxAttempts} — a verificar Multibanco`);
+
+      const response = await fetch(
+        `https://arion-lisboa.myshopify.com/admin/api/2023-10/orders/${order.id}.json`,
+        {
+          headers: {
+            "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
+            "Content-Type": "application/json"
+          }
         }
-      }
-    );
+      );
 
-    if (!shopifyResponse.ok) {
-      console.error("Erro ao buscar order:", shopifyResponse.status);
-      return;
+      if (!response.ok) {
+        console.error("Erro Shopify:", response.status);
+        return;
+      }
+
+      const data = await response.json();
+      const transactions = data.order.transactions || [];
+
+      mbTransaction = transactions.find(
+        t => t.receipt && t.receipt.multibanco_reference
+      );
+
+      if (mbTransaction) {
+        console.log("Referência Multibanco encontrada");
+        break;
+      }
+
+      if (attempt < maxAttempts) {
+        await new Promise(r => setTimeout(r, delayMs));
+      }
     }
 
-    const data = await shopifyResponse.json();
-    const transactions = data.order.transactions || [];
-
-    // Procurar transaction com Multibanco
-    const mbTransaction = transactions.find(
-      t => t.receipt && t.receipt.multibanco_reference
-    );
-
     if (!mbTransaction) {
-      console.log("Ainda sem referência Multibanco");
+      console.log("Multibanco não apareceu após todas as tentativas");
       return;
     }
 
@@ -63,7 +68,6 @@ app.post("/webhooks/shopify-order-updated", async (req, res) => {
       amount
     } = mbTransaction.receipt;
 
-    // Telefone do cliente
     const phone =
       order.phone ||
       order.customer?.phone ||
@@ -74,12 +78,10 @@ app.post("/webhooks/shopify-order-updated", async (req, res) => {
       return;
     }
 
-    // Preparar autenticação EZ4U
     const ez4uAuth = Buffer.from(
       `${process.env.EZ4U_USER}:${process.env.EZ4U_PASS}`
     ).toString("base64");
 
-    // Enviar SMS
     const smsResponse = await fetch(
       "https://dashboard.ez4uteam.com/api/rest/sms",
       {
@@ -101,8 +103,8 @@ app.post("/webhooks/shopify-order-updated", async (req, res) => {
     );
 
     if (!smsResponse.ok) {
-      const errText = await smsResponse.text();
-      console.error("Erro EZ4U:", smsResponse.status, errText);
+      const err = await smsResponse.text();
+      console.error("Erro EZ4U:", smsResponse.status, err);
       return;
     }
 
@@ -113,7 +115,6 @@ app.post("/webhooks/shopify-order-updated", async (req, res) => {
   }
 });
 
-// Porta para Render
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Servidor a correr na porta ${PORT}`);
